@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update
 from telegram.ext import (
@@ -29,6 +31,31 @@ OWNER_ID = 8396463894
 
 
 # =========================================================
+# 🌐 RENDER HEALTH SERVER
+# =========================================================
+
+PORT = int(os.getenv("PORT", "10000"))
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"MyPersonalAI is running!")
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_health_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    print(f"🌐 Health server running on port {PORT}")
+    server.serve_forever()
+
+
+# =========================================================
 # 🧠 MEMORY
 # =========================================================
 
@@ -40,8 +67,8 @@ def load_memory():
         if os.path.exists(MEMORY_FILE):
             with open(MEMORY_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.error(f"Memory load error: {e}")
 
     return {
         "important": [],
@@ -126,7 +153,7 @@ SYSTEM_PROMPT = """
 
 
 # =========================================================
-# 💬 AI FUNCTION
+# 💬 PROMPT
 # =========================================================
 
 def build_prompt(user_text):
@@ -138,11 +165,13 @@ def build_prompt(user_text):
 
     if important:
         prompt += "\n\nСакталган маанилүү маалыматтар:\n"
+
         for item in important:
             prompt += f"- {item}\n"
 
     if history:
         prompt += "\n\nАкыркы диалог:\n"
+
         for item in history:
             prompt += f"User: {item.get('user', '')}\n"
             prompt += f"AI: {item.get('assistant', '')}\n"
@@ -174,10 +203,11 @@ def ask_openai(prompt):
             max_tokens=1500
         )
 
-        text = response.choices[0].message.content
+        if response.choices:
+            text = response.choices[0].message.content
 
-        if text:
-            return text.strip()
+            if text:
+                return text.strip()
 
     except Exception as e:
         logging.error(f"OpenAI error: {e}")
@@ -231,10 +261,11 @@ def ask_groq(prompt):
             max_tokens=1500
         )
 
-        text = response.choices[0].message.content
+        if response.choices:
+            text = response.choices[0].message.content
 
-        if text:
-            return text.strip()
+            if text:
+                return text.strip()
 
     except Exception as e:
         logging.error(f"Groq error: {e}")
@@ -243,26 +274,23 @@ def ask_groq(prompt):
 
 
 # =========================================================
-# 🧠 ASK AI
+# 🧠 AI ROUTER
 # =========================================================
 
 def ask_ai(user_text):
 
     prompt = build_prompt(user_text)
 
-    # 1️⃣ OpenAI
     answer = ask_openai(prompt)
 
     if answer:
         return answer
 
-    # 2️⃣ Gemini
     answer = ask_gemini(prompt)
 
     if answer:
         return answer
 
-    # 3️⃣ Groq
     answer = ask_groq(prompt)
 
     if answer:
@@ -272,7 +300,7 @@ def ask_ai(user_text):
 
 
 # =========================================================
-# 💾 SAVE HISTORY
+# 💾 SAVE DIALOG
 # =========================================================
 
 def save_dialog(user_text, answer):
@@ -293,18 +321,24 @@ def save_dialog(user_text, answer):
 # ⭐ REMEMBER
 # =========================================================
 
-async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def remember(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if update.effective_user.id != OWNER_ID:
         return
 
-    text = update.message.text
-
-    data = text.replace("/remember", "", 1).strip()
+    data = update.message.text.replace(
+        "/remember",
+        "",
+        1
+    ).strip()
 
     if not data:
         await update.message.reply_text(
-            "Мисалы:\n/remember Менин максатым айына 100000 сом табуу"
+            "Мисалы:\n"
+            "/remember Менин максатым айына 100000 сом табуу"
         )
         return
 
@@ -324,7 +358,10 @@ async def remember(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 📚 MEMORY
 # =========================================================
 
-async def show_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_memory(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if update.effective_user.id != OWNER_ID:
         return
@@ -334,7 +371,8 @@ async def show_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if important:
         saved = "\n".join(
-            f"• {item}" for item in important
+            f"• {item}"
+            for item in important
         )
     else:
         saved = "Азырынча маанилүү маалымат жок."
@@ -353,7 +391,10 @@ async def show_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🗑 FORGET
 # =========================================================
 
-async def forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def forget(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if update.effective_user.id != OWNER_ID:
         return
@@ -372,7 +413,10 @@ async def forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🚀 START
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "🤖 Салам, Бекболот!\n\n"
@@ -399,13 +443,14 @@ async def handle_message(
     if not user_text:
         return
 
-    await update.message.chat.send_action("typing")
+    await update.message.chat.send_action(
+        action="typing"
+    )
 
     answer = ask_ai(user_text)
 
     save_dialog(user_text, answer)
 
-    # Telegram 4096 limit
     chunks = [
         answer[i:i + 4000]
         for i in range(0, len(answer), 4000)
@@ -421,16 +466,25 @@ async def handle_message(
 
 def main():
 
-    if not TELEGRAM_TOKEN:
-        raise RuntimeError(
-            "TELEGRAM_TOKEN жок!"
-        )
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s"
     )
 
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_TOKEN жок!"
+        )
+
+    # 🌐 Render портун ачуу
+    health_thread = threading.Thread(
+        target=start_health_server,
+        daemon=True
+    )
+
+    health_thread.start()
+
+    # 🤖 Telegram
     application = (
         Application.builder()
         .token(TELEGRAM_TOKEN)
